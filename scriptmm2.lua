@@ -130,6 +130,18 @@ local function ToggleNoclip(state)
     end
 end
 
+local function IsCoinCollected(coin)
+    -- Если у монеты появился звук, значит её уже собирают
+    for _, child in ipairs(coin:GetChildren()) do
+        if child:IsA("Sound") and child.Playing then
+            return true
+        end
+    end
+    -- Если монета уже исчезла из игры (была удалена)
+    if not coin.Parent then return true end
+    return false
+end
+
 local function AutoFarmLoop()
     local originalGravity = workspace.Gravity
     local bv = Instance.new("BodyVelocity")
@@ -137,7 +149,6 @@ local function AutoFarmLoop()
     bv.P = 1000 
     bv.Parent = GetRoot()
     
-    local IgnoredCoins = {} -- Возвращен черный список
     local NoCoinsTimer = tick()
 
     while AutoFarm_Active do
@@ -152,9 +163,9 @@ local function AutoFarmLoop()
         local nearestCoin = nil
         local minDist = math.huge
 
-        -- Ищем ближайшую монету, которой нет в черном списке
+        -- Ищем ближайшую "живую" монету
         for _, coin in ipairs(coinFolder:GetChildren()) do
-            if coin.Name == "Coin_Server" and coin:IsA("BasePart") and not IgnoredCoins[coin] then
+            if coin.Name == "Coin_Server" and coin:IsA("BasePart") and not IsCoinCollected(coin) then
                 local dist = (coin.Position - root.Position).Magnitude
                 if dist < minDist then minDist = dist; nearestCoin = coin end
             end
@@ -174,31 +185,57 @@ local function AutoFarmLoop()
 
         if nearestCoin then
             if AutoFarmMode == "Smooth" then
-                -- Плавный полет (гравитация отключается)
                 workspace.Gravity = 0
-                if minDist <= 0.25 then
-                    -- Если подлетели на 0.25 студа, добавляем в черный список и останавливаемся
-                    IgnoredCoins[nearestCoin] = true
+                if minDist <= 1 then
+                    -- Долетели до цели, останавливаемся
                     bv.Velocity = Vector3.zero
                 else
                     local dir = (nearestCoin.Position - root.Position).Unit
                     bv.Velocity = dir * 20
                 end
             else
-                -- Режим ТП (гравитацию НЕ трогаем)
+                -- Режим ТП
                 bv.Velocity = Vector3.zero
-                root.CFrame = CFrame.new(nearestCoin.Position + Vector3.new(0, 3, 0))
-                IgnoredCoins[nearestCoin] = true
-                task.wait(1.5)
+                workspace.Gravity = originalGravity -- Возвращаем гравитацию для ТП
+                
+                -- ТП прямо ВНУТРЬ монеты (смещение 0,0,0, так как монета - это Part)
+                if nearestCoin.Parent then
+                    root.CFrame = CFrame.new(nearestCoin.Position)
+                end
+                
+                -- Ждем ровно столько, сколько нужно серверу для регистрации
+                -- Асинхронно, чтобы не блокировать управление
+                task.spawn(function()
+                    task.wait(1.5)
+                end)
+                
+                -- Цикл не блокируется, он продолжает искать монеты
+                -- Следующая итерация начнется через 0.05 сек
+                task.wait(1.5) 
             end
         else
             bv.Velocity = Vector3.zero
         end
     end
-    -- Возвращаем гравитацию при выключении
     workspace.Gravity = originalGravity
     bv:Destroy()
 end
+
+-- Авто-перезапуск фарма каждые 5 секунд (от зависаний)
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if AutoFarm_Active then
+            -- Если персонаж умер, то цикл прервался, нужно перезапустить
+            if not GetChar() or not GetChar():FindFirstChild("HumanoidRootPart") then
+                AutoFarm_Active = false
+                task.wait(1)
+                AutoFarm_Active = true
+                task.spawn(AutoFarmLoop)
+            end
+        end
+    end
+end)
 
 local function StopFling()
     Fling_Active = false
@@ -377,6 +414,7 @@ local function AutoGunLoop()
         end
     end
 end
+
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "MM2_Multi"; ScreenGui.ResetOnSpawn = false; ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
