@@ -1,0 +1,136 @@
+-- Save this as a separate script
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+local TELEPORT_DELAY = 0.15 
+local SEARCH_RADIUS = 2000  
+
+local Active = false
+local Collected = {}
+local Connections = {}
+
+-- Очередь монет
+local CoinQueue = {}
+local IsProcessing = false
+
+local function GetRoot()
+    local Char = LocalPlayer.Character
+    return Char and Char:FindFirstChild("HumanoidRootPart")
+end
+
+-- Обновленная проверка: ищем "Coin" и "Manequin", где бы они ни находились
+local function IsTargetCoin(Obj)
+    if not Obj then return false end
+    local Name = Obj.Name:lower()
+    
+    -- Ловим "Coin" (MeshPart), неважно в какой папке (Floor, FallingPieces и т.д.)
+    if Name == "coin" and Obj:IsA("MeshPart") then return true end
+    
+    -- Ловим модели манекенов с монетами
+    if Obj:IsA("Model") and (Name:find("manequin") or Name:find("mannequin")) then 
+        return true 
+    end
+    
+    return false
+end
+
+-- Процессор очереди (берет по одной монете и телепортируется)
+local function ProcessQueue()
+    if IsProcessing then return end
+    IsProcessing = true
+
+    while #CoinQueue > 0 and Active do
+        local Obj = table.remove(CoinQueue, 1)
+        
+        if Obj and Obj.Parent and not Collected[Obj] then
+            local Part = Obj:IsA("BasePart") and Obj or (Obj.PrimaryPart or Obj:FindFirstChildWhichIsA("BasePart"))
+            local Root = GetRoot()
+            
+            if Part and Root and (Root.Position - Part.Position).Magnitude <= SEARCH_RADIUS then
+                -- Телепортируемся к монете
+                Root.CFrame = CFrame.new(Part.Position + Vector3.new(0, 2, 0))
+                Collected[Obj] = true
+                
+                -- Ждем, чтобы сервер засчитал сбор
+                task.wait(TELEPORT_DELAY)
+            end
+        end
+    end
+
+    IsProcessing = false
+end
+
+-- Функция добавления монеты в очередь
+local function AddToQueue(Obj)
+    if not Active or Collected[Obj] then return end
+    
+    for _, queued in ipairs(CoinQueue) do
+        if queued == Obj then return end
+    end
+    
+    table.insert(CoinQueue, Obj)
+    task.spawn(ProcessQueue) 
+end
+
+-- === GUI ===
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CoinCollectorGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.fromOffset(120, 40)
+ToggleBtn.Position = UDim2.new(1, -140, 0, 20)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleBtn.Text = "Сбор монет: ВЫКЛ"
+ToggleBtn.TextSize = 14
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.AutoButtonColor = false
+ToggleBtn.Parent = ScreenGui
+
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(0, 8)
+Corner.Parent = ToggleBtn
+
+ToggleBtn.Active = true
+ToggleBtn.Draggable = true
+
+-- === ЛОГИКА ===
+local function SetState(State)
+    Active = State
+    ToggleBtn.Text = State and "Сбор монет: ВКЛ" or "Сбор монет: ВЫКЛ"
+    ToggleBtn.BackgroundColor3 = State and Color3.fromRGB(0, 160, 80) or Color3.fromRGB(60, 60, 60)
+
+    for _, conn in ipairs(Connections) do
+        conn:Disconnect()
+    end
+    table.clear(Connections)
+
+    if State then
+        table.clear(Collected)
+        table.clear(CoinQueue)
+        
+        table.insert(Connections, workspace.DescendantAdded:Connect(function(Obj)
+            if IsTargetCoin(Obj) then
+                AddToQueue(Obj)
+            end
+        end))
+
+        task.spawn(function()
+            for _, Obj in ipairs(workspace:GetDescendants()) do
+                if IsTargetCoin(Obj) then
+                    AddToQueue(Obj)
+                end
+            end
+        end)
+    else
+        table.clear(CoinQueue)
+    end
+end
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    SetState(not Active)
+end)
