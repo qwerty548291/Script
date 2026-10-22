@@ -136,7 +136,8 @@ local function AutoFarmLoop()
     bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
     bv.P = 1000 
     bv.Parent = GetRoot()
-    local IgnoredCoins = {}
+    
+    local IgnoredCoins = {} -- Возвращен черный список
     local NoCoinsTimer = tick()
 
     while AutoFarm_Active do
@@ -151,6 +152,7 @@ local function AutoFarmLoop()
         local nearestCoin = nil
         local minDist = math.huge
 
+        -- Ищем ближайшую монету, которой нет в черном списке
         for _, coin in ipairs(coinFolder:GetChildren()) do
             if coin.Name == "Coin_Server" and coin:IsA("BasePart") and not IgnoredCoins[coin] then
                 local dist = (coin.Position - root.Position).Magnitude
@@ -158,9 +160,10 @@ local function AutoFarmLoop()
             end
         end
 
+        -- Логика смерти при отсутствии монет (20 секунд)
         if nearestCoin and minDist <= 3000 then
             NoCoinsTimer = tick()
-        elseif tick() - NoCoinsTimer > 5 and FarmDeath_Active then
+        elseif tick() - NoCoinsTimer > 20 and FarmDeath_Active then
             if GetChar():FindFirstChildOfClass("Tool") and GetChar():FindFirstChildOfClass("Tool").Name == "Knife" then
                 KillAll_Active = true
             end
@@ -171,7 +174,10 @@ local function AutoFarmLoop()
 
         if nearestCoin then
             if AutoFarmMode == "Smooth" then
-                if minDist < 4 then
+                -- Плавный полет (гравитация отключается)
+                workspace.Gravity = 0
+                if minDist <= 0.25 then
+                    -- Если подлетели на 0.25 студа, добавляем в черный список и останавливаемся
                     IgnoredCoins[nearestCoin] = true
                     bv.Velocity = Vector3.zero
                 else
@@ -179,6 +185,7 @@ local function AutoFarmLoop()
                     bv.Velocity = dir * 20
                 end
             else
+                -- Режим ТП (гравитацию НЕ трогаем)
                 bv.Velocity = Vector3.zero
                 root.CFrame = CFrame.new(nearestCoin.Position + Vector3.new(0, 3, 0))
                 IgnoredCoins[nearestCoin] = true
@@ -188,6 +195,7 @@ local function AutoFarmLoop()
             bv.Velocity = Vector3.zero
         end
     end
+    -- Возвращаем гравитацию при выключении
     workspace.Gravity = originalGravity
     bv:Destroy()
 end
