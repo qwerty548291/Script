@@ -130,6 +130,17 @@ local function ToggleNoclip(state)
     end
 end
 
+local function IsBagFull()
+    local PlayerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not PlayerGui then return false end
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if v.Name == "Coins" and v:IsA("TextLabel") then
+            if v.Text:find("50") then return true end
+        end
+    end
+    return false
+end
+
 local function AutoFarmLoop()
     local originalGravity = workspace.Gravity
     local bv = Instance.new("BodyVelocity")
@@ -138,11 +149,8 @@ local function AutoFarmLoop()
     bv.Parent = GetRoot()
     
     local NoCoinsTimer = tick()
-    local ZoneTimer = nil
     local IgnoredCoins = {}
     local IsPaused = false
-    
-    -- НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ ЛОГИКИ СМЕРТИ
     local HasSeenCoin = false 
     local IsDead = false
 
@@ -151,10 +159,10 @@ local function AutoFarmLoop()
         local root = GetRoot()
         local humanoid = GetChar() and GetChar():FindFirstChildOfClass("Humanoid")
         
-        -- Проверяем смерть персонажа
+        -- Проверка на смерть
         if not root or (humanoid and humanoid.Health <= 0) then
             IsDead = true
-            HasSeenCoin = false -- После смерти сбрасываем флаг монет
+            HasSeenCoin = false
             NoCoinsTimer = tick()
             bv.Velocity = Vector3.zero
             task.wait(0.5)
@@ -168,7 +176,7 @@ local function AutoFarmLoop()
         local coinFolder = workspace:FindFirstChild("CoinContainer", true)
         if not coinFolder then continue end
 
-        -- Проверка на лобби (пауза и сброс таймера)
+        -- Проверка на лобби
         if IsInLobby(LocalPlayer) then
             IsPaused = true
             bv.Velocity = Vector3.zero
@@ -179,10 +187,26 @@ local function AutoFarmLoop()
             IsPaused = false
         end
 
+        -- Проверка полной сумки
+        if IsBagFull() and FarmDeath_Active then
+            local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
+            if myTool and myTool.Name == "Knife" then
+                if not KillAll_Active then KillAll_Active = true; task.spawn(KillAllLoop) end
+            else
+                if tick() - NoCoinsTimer > 5 then
+                    if humanoid then humanoid.Health = 0 end
+                    NoCoinsTimer = tick()
+                end
+            end
+            bv.Velocity = Vector3.zero
+            task.wait(0.5)
+            continue
+        end
+
         local nearestCoin = nil
         local minDist = math.huge
 
-        -- Ищем ближайшую монету
+        -- Поиск ближайшей монеты
         for _, coin in ipairs(coinFolder:GetChildren()) do
             if coin.Name == "Coin_Server" and coin:IsA("BasePart") and not IgnoredCoins[coin] then
                 local dist = (coin.Position - root.Position).Magnitude
@@ -190,36 +214,40 @@ local function AutoFarmLoop()
             end
         end
 
-        -- ЛОГИКА СМЕРТИ
         if nearestCoin then
-            HasSeenCoin = true -- Увидели монету, теперь таймер смерти разрешен
+            HasSeenCoin = true
             NoCoinsTimer = tick()
+            
+            -- Ищем событие сбора монеты, чтобы добавить в черный список
+            local coinCollectedEvent = nearestCoin:FindFirstChild("CoinCollected") 
+            if coinCollectedEvent and coinCollectedEvent:IsA("BindableEvent") then
+                -- Если на монете сработало событие, добавляем в игнор
+                coinCollectedEvent.Event:Connect(function()
+                    IgnoredCoins[nearestCoin] = true
+                end)
+            end
+            
+            -- Альтернативный игнор: если дистанция меньше 1, верим, что собрали
+            if minDist <= 1 then
+                IgnoredCoins[nearestCoin] = true
+            end
         end
 
-        if not nearestCoin and HasSeenCoin and not IsDead and not IsPaused and FarmDeath_Active then
-            -- Монет нет, мы живы, не в лобби и уже видели монеты ранее
+        -- Логика смерти если монеты закончились (и сумка не полная)
+        if not nearestCoin and HasSeenCoin and not IsDead and not IsPaused and FarmDeath_Active and not IsBagFull() then
             if tick() - NoCoinsTimer > 5 then
-                if GetChar():FindFirstChildOfClass("Tool") and GetChar():FindFirstChildOfClass("Tool").Name == "Knife" then
-                    KillAll_Active = true
+                local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
+                if myTool and myTool.Name == "Knife" then
+                    if not KillAll_Active then KillAll_Active = true; task.spawn(KillAllLoop) end
+                else
+                    if humanoid then humanoid.Health = 0 end
                 end
-                if humanoid then humanoid.Health = 0 end
-                HasSeenCoin = false -- После смерти сбрасываем
+                HasSeenCoin = false
                 NoCoinsTimer = tick()
             end
         end
 
         if nearestCoin then
-            if minDist <= 1 then
-                if not ZoneTimer then
-                    ZoneTimer = tick()
-                elseif tick() - ZoneTimer >= 0.5 then
-                    IgnoredCoins[nearestCoin] = true
-                    ZoneTimer = nil
-                end
-            else
-                ZoneTimer = nil
-            end
-
             if AutoFarmMode == "Smooth" then
                 workspace.Gravity = 0
                 if minDist <= 1 then
@@ -250,20 +278,8 @@ local function AutoFarmLoop()
     bv:Destroy()
 end
 
--- Авто-перезапуск фарма
-task.spawn(function()
-    while true do
-        task.wait(5)
-        if AutoFarm_Active then
-            if not GetChar() or not GetChar():FindFirstChild("HumanoidRootPart") then
-                AutoFarm_Active = false
-                task.wait(1)
-                AutoFarm_Active = true
-                task.spawn(AutoFarmLoop)
-            end
-        end
-    end
-end)
+-- Остальные функции (StopFling, StartFling, GetMurderer, GetNearestInnocent, RageAimLoop, LegitAimSheriffLoop, RageKnifeLoop, LegitKnifeLoop, KillAllLoop, AutoGunLoop)
+-- остаются точно такими же, как в предыдущей версии. Тебе нужно скопировать их и вставить ниже.
 
 local function StopFling()
     Fling_Active = false
