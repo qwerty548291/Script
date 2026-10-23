@@ -130,18 +130,6 @@ local function ToggleNoclip(state)
     end
 end
 
-local function IsCoinBeingCollected(coin)
-    -- Если монета уже исчезла из игры
-    if not coin.Parent then return true end
-    -- Если у монеты есть играющий звук (её уже собирают)
-    for _, child in ipairs(coin:GetChildren()) do
-        if child:IsA("Sound") and child.Playing then
-            return true
-        end
-    end
-    return false
-end
-
 local function AutoFarmLoop()
     local originalGravity = workspace.Gravity
     local bv = Instance.new("BodyVelocity")
@@ -150,7 +138,9 @@ local function AutoFarmLoop()
     bv.Parent = GetRoot()
     
     local NoCoinsTimer = tick()
-    local TpWaitTimer = 0
+    local ZoneTimer = nil
+    local IgnoredCoins = {}
+    local IsPaused = false
 
     while AutoFarm_Active do
         task.wait(0.05)
@@ -161,10 +151,15 @@ local function AutoFarmLoop()
         local coinFolder = workspace:FindFirstChild("CoinContainer", true)
         if not coinFolder then continue end
 
-        -- Логика паузы для ТП режима
-        if AutoFarmMode == "TP" and tick() - TpWaitTimer < 1.1 then
+        -- Проверка на лобби (пауза и сброс таймера)
+        if IsInLobby(LocalPlayer) then
+            IsPaused = true
             bv.Velocity = Vector3.zero
+            NoCoinsTimer = tick()
+            task.wait(0.5) -- Пауза, чтобы не спамить
             continue
+        else
+            IsPaused = false
         end
 
         local nearestCoin = nil
@@ -172,16 +167,30 @@ local function AutoFarmLoop()
 
         -- Ищем ближайшую монету
         for _, coin in ipairs(coinFolder:GetChildren()) do
-            if coin.Name == "Coin_Server" and coin:IsA("BasePart") and not IsCoinBeingCollected(coin) then
+            if coin.Name == "Coin_Server" and coin:IsA("BasePart") and not IgnoredCoins[coin] then
                 local dist = (coin.Position - root.Position).Magnitude
                 if dist < minDist then minDist = dist; nearestCoin = coin end
             end
         end
 
-        -- Логика смерти при отсутствии монет (20 секунд)
-        if nearestCoin and minDist <= 3000 then
+        -- Логика смерти при отсутствии монет (5 секунд) и только если есть роли
+        local murdererExists = false
+        local sheriffExists = false
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
+                local backpack = p:FindFirstChild("Backpack")
+                if backpack then
+                    if backpack:FindFirstChild("Knife") then murdererExists = true end
+                    if backpack:FindFirstChild("Gun") or backpack:FindFirstChild("Revolver") then sheriffExists = true end
+                end
+            end
+        end
+
+        local RolesAssigned = (murdererExists or sheriffExists)
+        
+        if nearestCoin and minDist <= 1000 then
             NoCoinsTimer = tick()
-        elseif tick() - NoCoinsTimer > 20 and FarmDeath_Active then
+        elseif tick() - NoCoinsTimer > 5 and FarmDeath_Active and RolesAssigned and not IsPaused then
             if GetChar():FindFirstChildOfClass("Tool") and GetChar():FindFirstChildOfClass("Tool").Name == "Knife" then
                 KillAll_Active = true
             end
@@ -191,24 +200,42 @@ local function AutoFarmLoop()
         end
 
         if nearestCoin then
+            if minDist <= 1 then
+                -- Зона сбора (1x1x1). Запускаем таймер для черного списка (0.5 сек)
+                if not ZoneTimer then
+                    ZoneTimer = tick()
+                elseif tick() - ZoneTimer >= 0.5 then
+                    IgnoredCoins[nearestCoin] = true
+                    ZoneTimer = nil
+                end
+            else
+                ZoneTimer = nil
+            end
+
             if AutoFarmMode == "Smooth" then
-                -- ПЛАВНЫЙ ПОЛЕТ (без задержек)
                 workspace.Gravity = 0
-                if minDist <= 0.5 then
-                    -- Долетели до цели, останавливаемся и СРАЗУ ищем следующую
+                if minDist <= 1 then
                     bv.Velocity = Vector3.zero
                 else
                     local dir = (nearestCoin.Position - root.Position).Unit
                     bv.Velocity = dir * 20
                 end
             else
-                -- РЕЖИМ ТП
+                -- Режим ТП
                 bv.Velocity = Vector3.zero
                 workspace.Gravity = originalGravity
-                
-                if nearestCoin.Parent then
+                if nearestCoin.Parent and minDist > 1 then
                     root.CFrame = CFrame.new(nearestCoin.Position)
-                    TpWaitTimer = tick() -- Запускаем таймер ожидания 1.1 сек
+                    
+                    -- Движение вверх-вниз для регистрации сбора
+                    task.spawn(function()
+                        task.wait(0.1)
+                        root.AssemblyLinearVelocity = Vector3.new(0, 15, 0)
+                        task.wait(0.1)
+                        root.AssemblyLinearVelocity = Vector3.new(0, -15, 0)
+                    end)
+                    
+                    task.wait(1.1)
                 end
             end
         else
@@ -219,7 +246,7 @@ local function AutoFarmLoop()
     bv:Destroy()
 end
 
--- Авто-перезапуск фарма каждые 5 секунд (от зависаний)
+-- Авто-перезапуск фарма (если завис)
 task.spawn(function()
     while true do
         task.wait(5)
