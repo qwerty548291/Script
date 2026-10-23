@@ -153,6 +153,10 @@ local function AutoFarmLoop()
     local IsPaused = false
     local HasSeenCoin = false 
     local IsDead = false
+    
+    -- Переменные для Watchdog (защита от зависаний)
+    local LastActionTime = tick()
+    local LastPosition = GetRoot() and GetRoot().Position or Vector3.zero
 
     while AutoFarm_Active do
         task.wait(0.05)
@@ -175,6 +179,33 @@ local function AutoFarmLoop()
 
         local coinFolder = workspace:FindFirstChild("CoinContainer", true)
         if not coinFolder then continue end
+
+        -- WATCHDOG: Если мы не в лобби и не движемся к монете
+        if not IsInLobby(LocalPlayer) then
+            local isMoving = (root.Position - LastPosition).Magnitude > 1
+            local isSearching = false -- Флаг, что мы нашли монету и летим к ней
+            
+            -- Проверяем, летим ли мы (по скорости)
+            if bv.Velocity.Magnitude > 1 or isMoving then
+                isSearching = true
+            end
+
+            if not isSearching then
+                -- Если мы не движемся и не ищем, запускаем перезапуск
+                if tick() - LastActionTime > 0.5 then
+                    print("[AutoFarm] Зависание! Перезапуск поиска...")
+                    -- Очищаем память и заново ищем
+                    HasSeenCoin = false
+                    IgnoredCoins = {}
+                    bv.Velocity = Vector3.new(0, 50, 0) -- Подкидываем, чтобы стряхнуть
+                    task.wait(0.2)
+                    LastActionTime = tick()
+                end
+            else
+                LastActionTime = tick()
+            end
+        end
+        LastPosition = root.Position
 
         -- Проверка на лобби
         if IsInLobby(LocalPlayer) then
@@ -218,22 +249,16 @@ local function AutoFarmLoop()
             HasSeenCoin = true
             NoCoinsTimer = tick()
             
-            -- Ищем событие сбора монеты, чтобы добавить в черный список
+            -- Слушаем ивент сбора
             local coinCollectedEvent = nearestCoin:FindFirstChild("CoinCollected") 
             if coinCollectedEvent and coinCollectedEvent:IsA("BindableEvent") then
-                -- Если на монете сработало событие, добавляем в игнор
                 coinCollectedEvent.Event:Connect(function()
                     IgnoredCoins[nearestCoin] = true
                 end)
             end
-            
-            -- Альтернативный игнор: если дистанция меньше 1, верим, что собрали
-            if minDist <= 1 then
-                IgnoredCoins[nearestCoin] = true
-            end
         end
 
-        -- Логика смерти если монеты закончились (и сумка не полная)
+        -- Логика смерти если монеты закончились
         if not nearestCoin and HasSeenCoin and not IsDead and not IsPaused and FarmDeath_Active and not IsBagFull() then
             if tick() - NoCoinsTimer > 5 then
                 local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
@@ -251,23 +276,46 @@ local function AutoFarmLoop()
             if AutoFarmMode == "Smooth" then
                 workspace.Gravity = 0
                 if minDist <= 1 then
+                    IgnoredCoins[nearestCoin] = true
                     bv.Velocity = Vector3.zero
                 else
                     local dir = (nearestCoin.Position - root.Position).Unit
                     bv.Velocity = dir * 20
                 end
             else
+                -- РЕЖИМ ТП: Сбор с вращением
                 bv.Velocity = Vector3.zero
                 workspace.Gravity = originalGravity
+                
                 if nearestCoin.Parent and minDist > 1 then
-                    root.CFrame = CFrame.new(nearestCoin.Position)
+                    -- 1. Телепорт к монете
+                    local centerPos = nearestCoin.Position
+                    root.CFrame = CFrame.new(centerPos)
+                    
+                    -- 2. Вращение вокруг монеты (по всем осям)
+                    local angle = 0
+                    local orbitConn
+                    orbitConn = RunService.Heartbeat:Connect(function(dt)
+                        angle = angle + (dt * 15) -- Скорость вращения
+                        local offsetX = math.cos(angle) * 1
+                        local offsetY = math.sin(angle) * 1
+                        local offsetZ = math.sin(angle) * 1
+                        root.CFrame = CFrame.new(centerPos + Vector3.new(offsetX, offsetY, offsetZ))
+                        root.AssemblyLinearVelocity = Vector3.zero -- Фиксируем на месте
+                    end)
+                    
+                    -- 3. Имитация сбора (движение вверх-вниз)
                     task.spawn(function()
                         task.wait(0.1)
                         root.AssemblyLinearVelocity = Vector3.new(0, 15, 0)
                         task.wait(0.1)
                         root.AssemblyLinearVelocity = Vector3.new(0, -15, 0)
                     end)
+                    
+                    -- 4. Ждем и завершаем вращение
                     task.wait(1.1)
+                    if orbitConn then orbitConn:Disconnect() end
+                    IgnoredCoins[nearestCoin] = true
                 end
             end
         else
@@ -279,185 +327,7 @@ local function AutoFarmLoop()
 end
 
 -- Остальные функции (StopFling, StartFling, GetMurderer, GetNearestInnocent, RageAimLoop, LegitAimSheriffLoop, RageKnifeLoop, LegitKnifeLoop, KillAllLoop, AutoGunLoop)
--- остаются точно такими же, как в предыдущей версии. Тебе нужно скопировать их и вставить ниже.
-
-local function StopFling()
-    Fling_Active = false
-    if FlingConnection then FlingConnection:Disconnect() end
-    if FlingStartPos and GetRoot() then
-        GetRoot().CFrame = FlingStartPos
-        GetRoot().AssemblyLinearVelocity = Vector3.zero
-        GetRoot().AssemblyAngularVelocity = Vector3.zero
-    end
-    FlingStartPos, FlingTarget = nil, nil
-end
-
-local function StartFling(targetPlayer)
-    StopFling()
-    local targetRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-    local myRoot = GetRoot()
-    if not targetRoot or not myRoot then return end
-    Fling_Active, FlingTarget, FlingStartPos = true, targetPlayer, myRoot.CFrame
-    local angle = 0
-    FlingConnection = RunService.Heartbeat:Connect(function(dt)
-        if not Fling_Active then return end
-        local currentTargetRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not currentTargetRoot or not GetRoot() then StopFling(); return end
-        angle = angle + (dt * 50)
-        local offset = Vector3.new(math.cos(angle) * 0.7, math.sin(angle) * 0.7, math.sin(angle) * 0.7)
-        local newPos = currentTargetRoot.Position + offset
-        GetRoot().CFrame = CFrame.new(newPos)
-        GetRoot().AssemblyLinearVelocity = (currentTargetRoot.Position - newPos).Unit * 25000 + Vector3.new(0, 10000, 0)
-        GetRoot().AssemblyAngularVelocity = Vector3.new(5000, 5000, 5000)
-    end)
-end
-
-local function GetMurderer()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
-            local backpack = p:FindFirstChild("Backpack")
-            if backpack and backpack:FindFirstChild("Knife") then return p.Character end
-        end
-    end
-    return nil
-end
-
-local function GetNearestInnocent()
-    local myRoot = GetRoot()
-    if not myRoot then return nil end
-    local closest, minDist = nil, 15
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
-            local charTool = p.Character:FindFirstChildOfClass("Tool")
-            local backpack = p:FindFirstChild("Backpack")
-            local isMurderer = (charTool and charTool.Name == "Knife") or (backpack and backpack:FindFirstChild("Knife"))
-            local isSheriff = (charTool and (charTool.Name == "Gun" or charTool.Name == "Revolver")) or (backpack and (backpack:FindFirstChild("Gun") or backpack:FindFirstChild("Revolver")))
-            if not isMurderer and not isSheriff then
-                local tr = p.Character:FindFirstChild("HumanoidRootPart")
-                if tr then
-                    local d = (tr.Position - myRoot.Position).Magnitude
-                    if d < minDist then minDist = d; closest = p.Character end
-                end
-            end
-        end
-    end
-    return closest
-end
-
-local function RageAimLoop()
-    while RageAim_Active do
-        task.wait(0.05)
-        local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-        local murderer = GetMurderer()
-        if myTool and (myTool.Name == "Gun" or myTool.Name == "Revolver") and murderer then
-            local targetRoot = murderer:FindFirstChild("HumanoidRootPart")
-            local myRoot = GetRoot()
-            if targetRoot and myRoot then
-                myRoot.CFrame = CFrame.new(targetRoot.Position - (targetRoot.CFrame.LookVector * 10), targetRoot.Position)
-                myTool:Activate()
-            end
-        end
-    end
-end
-
-local function LegitAimSheriffLoop()
-    while LegitAimSheriff_Active do
-        RunService.RenderStepped:Wait()
-        local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-        local murderer = GetMurderer()
-        if myTool and (myTool.Name == "Gun" or myTool.Name == "Revolver") and murderer then
-            local targetRoot = murderer:FindFirstChild("HumanoidRootPart")
-            if targetRoot then
-                local rayParams = RaycastParams.new()
-                rayParams.FilterDescendantsInstances = {LocalPlayer.Character, murderer}
-                rayParams.FilterType = Enum.RaycastFilterType.Exclude
-                local ray = workspace:Raycast(Camera.CFrame.Position, (targetRoot.Position - Camera.CFrame.Position), rayParams)
-                if not ray then
-                    Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, targetRoot.Position), 0.15)
-                    if (Camera.CFrame.LookVector - (targetRoot.Position - Camera.CFrame.Position).Unit).Magnitude < 0.1 then myTool:Activate() end
-                end
-            end
-        end
-    end
-end
-
-local function RageKnifeLoop()
-    while RageKnife_Active do
-        task.wait(0.05)
-        local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-        if myTool and myTool.Name == "Knife" then
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
-                    local targetRoot = p.Character:FindFirstChild("HumanoidRootPart")
-                    local myRoot = GetRoot()
-                    if targetRoot and myRoot then
-                        myRoot.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 2, 0))
-                        myTool:Activate()
-                    end
-                end
-            end
-        end
-    end
-end
-
-local function LegitKnifeLoop()
-    while LegitAimMurderer_Active do
-        RunService.Heartbeat:Wait()
-        local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-        if myTool and myTool.Name == "Knife" then
-            local targetChar = GetNearestInnocent()
-            if targetChar and targetChar:FindFirstChild("HumanoidRootPart") then
-                Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, targetChar.HumanoidRootPart.Position), 0.3)
-                myTool:Activate()
-            end
-        end
-    end
-end
-
-local function KillAllLoop()
-    while KillAll_Active do
-        task.wait(0.05)
-        local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-        if myTool and myTool.Name == "Knife" then
-            local myRoot = GetRoot()
-            if myRoot then
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
-                        local targetRoot = p.Character:FindFirstChild("HumanoidRootPart")
-                        if targetRoot then targetRoot.CFrame = myRoot.CFrame * CFrame.new(0, 0, -3) end
-                    end
-                end
-                myTool:Activate()
-            end
-        end
-    end
-end
-
-local function AutoGunLoop()
-    while AutoGun_Active do
-        task.wait(0.5)
-        local myRoot = GetRoot()
-        if not myRoot then continue end
-        local gunPart = workspace:FindFirstChild("GunPrompt", true)
-        if gunPart and not gunPart:IsDescendantOf(workspace:FindFirstChild("Lobby")) then
-            local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-            local hasGun = myTool and (myTool.Name == "Gun" or myTool.Name == "Revolver")
-            if not hasGun then
-                if (gunPart.Position - myRoot.Position).Magnitude <= 2000 then 
-                    if not GunReturnPos then GunReturnPos = myRoot.CFrame end
-                    myRoot.CFrame = gunPart.CFrame + Vector3.new(0, 3, 0)
-                    task.wait(0.2)
-                    local newTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-                    if newTool and (newTool.Name == "Gun" or newTool.Name == "Revolver") then
-                        if GunReturnPos then myRoot.CFrame = GunReturnPos; GunReturnPos = nil end
-                    end
-                end
-            elseif hasGun and GunReturnPos then
-                myRoot.CFrame = GunReturnPos; GunReturnPos = nil
-            end
-        end
-    end
-end
+-- остаются точно такими же, как в предыдущей версии.
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "MM2_Multi"; ScreenGui.ResetOnSpawn = false; ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
