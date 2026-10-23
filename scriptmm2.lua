@@ -9,8 +9,10 @@ local Camera = workspace.CurrentCamera
 local ESP_Settings = {
     Murderer = { Enabled = false, Name = true, Dist = true, Box = true, Tracer = true, Color = Color3.fromRGB(255, 0, 0) },
     Sheriff = { Enabled = false, Name = true, Dist = true, Box = true, Tracer = true, Color = Color3.fromRGB(0, 150, 255) },
+    Hero = { Enabled = false, Name = true, Dist = true, Box = true, Tracer = true, Color = Color3.fromRGB(255, 165, 0) }, -- Оранжевый для Героя
     Innocent = { Enabled = false, Name = true, Dist = true, Box = true, Tracer = true, Color = Color3.fromRGB(0, 255, 0) },
-    Lobby = { Name = true, Dist = true, Box = true, Tracer = true, Color = Color3.fromRGB(150, 150, 150) }
+    Lobby = { Enabled = false, Name = true, Dist = true, Box = true, Tracer = true, Color = Color3.fromRGB(150, 150, 150) },
+    Gun = { Enabled = false, Color = Color3.fromRGB(255, 255, 0) }
 }
 local ESP_Objects = {}
 
@@ -39,6 +41,7 @@ local function CreateESPForPlayer(player, role)
     local settings = ESP_Settings[role]
     if not settings then return end
     if role ~= "Lobby" and not settings.Enabled then return end
+    if role == "Lobby" and not ESP_Settings.Lobby.Enabled then return end
 
     ESP_Objects[player] = {
         Box = settings.Box and Drawing.new("Square") or nil,
@@ -54,6 +57,7 @@ local function CreateESPForPlayer(player, role)
 end
 
 local function UpdateESP()
+    -- Отрисовка игроков
     for player, esp in pairs(ESP_Objects) do
         if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
             for _, drawing in pairs(esp) do if drawing then drawing.Visible = false end end
@@ -63,6 +67,7 @@ local function UpdateESP()
         local head = player.Character:FindFirstChild("Head") or root
         local distance = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and (root.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude) or 0
         local vector, onScreen = Camera:WorldToViewportPoint(root.Position)
+        
         if onScreen then
             local headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
             local legPos = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
@@ -76,29 +81,62 @@ local function UpdateESP()
             for _, drawing in pairs(esp) do if drawing then drawing.Visible = false end end
         end
     end
+    
+    -- Отрисовка пистолета (GunPrompt)
+    if ESP_Settings.Gun.Enabled then
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("ProximityPrompt") and obj.Parent and (obj.Parent.Name == "GunPrompt" or obj.Parent.Name == "Gun" or obj.Parent.Name == "Revolver") then
+                local part = obj.Parent
+                if part:IsA("BasePart") then
+                    local vector, onScreen = Camera:WorldToViewportPoint(part.Position)
+                    if onScreen then
+                        local hl = part:FindFirstChild("GunESP") or Instance.new("Highlight")
+                        hl.Name = "GunESP"
+                        hl.FillColor = ESP_Settings.Gun.Color
+                        hl.OutlineColor = ESP_Settings.Gun.Color
+                        hl.FillTransparency = 0.5
+                        hl.Parent = part
+                    end
+                end
+            end
+        end
+    end
 end
 
+-- Логика ролей
 task.spawn(function()
     while task.wait(0.2) do
         ClearESP()
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character then
                 if IsInLobby(player) then
-                    CreateESPForPlayer(player, "Lobby")
+                    if ESP_Settings.Lobby.Enabled then
+                        CreateESPForPlayer(player, "Lobby")
+                    end
                 else
-                    local isMurderer, isSheriff = false, false
+                    local isMurderer, isSheriff, isHero = false, false, false
                     local charTool = player.Character:FindFirstChildOfClass("Tool")
                     local backpack = player:FindFirstChild("Backpack")
-                    if charTool then
-                        if charTool.Name == "Knife" then isMurderer = true end
-                        if charTool.Name == "Gun" or charTool.Name == "Revolver" then isSheriff = true end
+                    
+                    local function HasTool(name)
+                        if charTool and charTool.Name == name then return true end
+                        if backpack and backpack:FindFirstChild(name) then return true end
+                        return false
                     end
-                    if backpack then
-                        if backpack:FindFirstChild("Knife") then isMurderer = true end
-                        if backpack:FindFirstChild("Gun") or backpack:FindFirstChild("Revolver") then isSheriff = true end
+
+                    if HasTool("Knife") then isMurderer = true end
+                    if HasTool("Gun") or HasTool("Revolver") then
+                        -- Проверяем, Шериф это или Герой
+                        if player:FindFirstChild("Backpack") and player.Backpack:FindFirstChild("Sheriff") then
+                            isSheriff = true
+                        else
+                            isHero = true
+                        end
                     end
+                    
                     if isMurderer then CreateESPForPlayer(player, "Murderer")
                     elseif isSheriff then CreateESPForPlayer(player, "Sheriff")
+                    elseif isHero then CreateESPForPlayer(player, "Hero")
                     else CreateESPForPlayer(player, "Innocent") end
                 end
             end
@@ -106,41 +144,6 @@ task.spawn(function()
     end
 end)
 RunService.RenderStepped:Connect(UpdateESP)
-local AutoFarm_Active, Noclip_Active = false, false
-local AutoFarmMode = "Smooth"
-local Fling_Active, FlingTarget, FlingConnection, FlingStartPos = false, nil, nil, nil
-local RageAim_Active, RageKnife_Active, AutoGun_Active = false, false, false
-local LegitAimSheriff_Active, LegitAimMurderer_Active = false, false
-local KillAll_Active, FarmDeath_Active = false, false
-local GunReturnPos = nil
-
-local function GetChar() return LocalPlayer.Character end
-local function GetRoot() local c = GetChar(); return c and c:FindFirstChild("HumanoidRootPart") end
-
-local function ToggleNoclip(state)
-    Noclip_Active = state
-    if state then
-        RunService.Stepped:Connect(function()
-            if Noclip_Active and GetChar() then
-                for _, part in ipairs(GetChar():GetDescendants()) do
-                    if part:IsA("BasePart") then part.CanCollide = false end
-                end
-            end
-        end)
-    end
-end
-
-local function IsBagFull()
-    local PlayerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not PlayerGui then return false end
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v.Name == "Coins" and v:IsA("TextLabel") then
-            if v.Text:find("50") then return true end
-        end
-    end
-    return false
-end
-
 local function AutoFarmLoop()
     local originalGravity = workspace.Gravity
     local bv = Instance.new("BodyVelocity")
@@ -153,8 +156,6 @@ local function AutoFarmLoop()
     local IsPaused = false
     local HasSeenCoin = false 
     local IsDead = false
-    
-    -- Переменные для Watchdog (защита от зависаний)
     local LastActionTime = tick()
     local LastPosition = GetRoot() and GetRoot().Position or Vector3.zero
 
@@ -163,81 +164,71 @@ local function AutoFarmLoop()
         local root = GetRoot()
         local humanoid = GetChar() and GetChar():FindFirstChildOfClass("Humanoid")
         
-        -- Проверка на смерть
         if not root or (humanoid and humanoid.Health <= 0) then
-            IsDead = true
-            HasSeenCoin = false
-            NoCoinsTimer = tick()
-            bv.Velocity = Vector3.zero
-            task.wait(0.5)
-            continue
+            IsDead = true; HasSeenCoin = false; NoCoinsTimer = tick()
+            bv.Velocity = Vector3.zero; task.wait(0.5); continue
         else
             IsDead = false
         end
 
         if not bv.Parent then bv.Parent = root end
 
-        local coinFolder = workspace:FindFirstChild("CoinContainer", true)
-        if not coinFolder then continue end
+        local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
+        local hasGun = myTool and (myTool.Name == "Gun" or myTool.Name == "Revolver")
 
-        -- WATCHDOG: Если мы не в лобби и не движемся к монете
-        if not IsInLobby(LocalPlayer) then
-            local isMoving = (root.Position - LastPosition).Magnitude > 1
-            local isSearching = false -- Флаг, что мы нашли монету и летим к ней
-            
-            -- Проверяем, летим ли мы (по скорости)
-            if bv.Velocity.Magnitude > 1 or isMoving then
-                isSearching = true
-            end
-
-            if not isSearching then
-                -- Если мы не движемся и не ищем, запускаем перезапуск
-                if tick() - LastActionTime > 0.5 then
-                    print("[AutoFarm] Зависание! Перезапуск поиска...")
-                    -- Очищаем память и заново ищем
-                    HasSeenCoin = false
-                    IgnoredCoins = {}
-                    bv.Velocity = Vector3.new(0, 50, 0) -- Подкидываем, чтобы стряхнуть
-                    task.wait(0.2)
-                    LastActionTime = tick()
+        -- ЛОГИКА: Если сумка полная
+        if IsBagFull() and FarmDeath_Active then
+            if myTool and myTool.Name == "Knife" then
+                -- Мы убийца
+                if not KillAll_Active then KillAll_Active = true; task.spawn(KillAllLoop) end
+            elseif hasGun then
+                -- Мы шериф: идем убивать
+                local murderer = GetMurderer()
+                if murderer then
+                    local targetRoot = murderer:FindFirstChild("HumanoidRootPart")
+                    if targetRoot then
+                        bv.Velocity = Vector3.zero
+                        root.CFrame = CFrame.new(targetRoot.Position - (targetRoot.CFrame.LookVector * 10), targetRoot.Position)
+                        myTool:Activate()
+                    end
                 end
             else
-                LastActionTime = tick()
-            end
-        end
-        LastPosition = root.Position
-
-        -- Проверка на лобби
-        if IsInLobby(LocalPlayer) then
-            IsPaused = true
-            bv.Velocity = Vector3.zero
-            NoCoinsTimer = tick()
-            task.wait(0.5)
-            continue
-        else
-            IsPaused = false
-        end
-
-        -- Проверка полной сумки
-        if IsBagFull() and FarmDeath_Active then
-            local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
-            if myTool and myTool.Name == "Knife" then
-                if not KillAll_Active then KillAll_Active = true; task.spawn(KillAllLoop) end
-            else
+                -- Мы невиновный
                 if tick() - NoCoinsTimer > 5 then
                     if humanoid then humanoid.Health = 0 end
                     NoCoinsTimer = tick()
                 end
             end
-            bv.Velocity = Vector3.zero
-            task.wait(0.5)
+            task.wait(0.2)
             continue
         end
 
+        local coinFolder = workspace:FindFirstChild("CoinContainer", true)
+        if not coinFolder then continue end
+
+        if not IsInLobby(LocalPlayer) then
+            local isMoving = (root.Position - LastPosition).Magnitude > 1
+            local isSearching = (bv.Velocity.Magnitude > 1 or isMoving)
+            if not isSearching and tick() - LastActionTime > 0.5 then
+                HasSeenCoin = false; IgnoredCoins = {}
+                bv.Velocity = Vector3.new(0, 50, 0); task.wait(0.2)
+                LastActionTime = tick()
+            elseif isSearching then
+                LastActionTime = tick()
+            end
+        end
+        LastPosition = root.Position
+
+        if IsInLobby(LocalPlayer) then
+            IsPaused = true; bv.Velocity = Vector3.zero; NoCoinsTimer = tick(); task.wait(0.5); continue
+        else
+            IsPaused = false
+        end
+
+        -- Логика поиска монет (если сумка не полная)
         local nearestCoin = nil
         local minDist = math.huge
 
-        -- Поиск ближайшей монеты
         for _, coin in ipairs(coinFolder:GetChildren()) do
             if coin.Name == "Coin_Server" and coin:IsA("BasePart") and not IgnoredCoins[coin] then
                 local dist = (coin.Position - root.Position).Magnitude
@@ -246,29 +237,21 @@ local function AutoFarmLoop()
         end
 
         if nearestCoin then
-            HasSeenCoin = true
-            NoCoinsTimer = tick()
-            
-            -- Слушаем ивент сбора
+            HasSeenCoin = true; NoCoinsTimer = tick()
             local coinCollectedEvent = nearestCoin:FindFirstChild("CoinCollected") 
             if coinCollectedEvent and coinCollectedEvent:IsA("BindableEvent") then
-                coinCollectedEvent.Event:Connect(function()
-                    IgnoredCoins[nearestCoin] = true
-                end)
+                coinCollectedEvent.Event:Connect(function() IgnoredCoins[nearestCoin] = true end)
             end
         end
 
-        -- Логика смерти если монеты закончились
         if not nearestCoin and HasSeenCoin and not IsDead and not IsPaused and FarmDeath_Active and not IsBagFull() then
             if tick() - NoCoinsTimer > 5 then
-                local myTool = GetChar() and GetChar():FindFirstChildOfClass("Tool")
                 if myTool and myTool.Name == "Knife" then
                     if not KillAll_Active then KillAll_Active = true; task.spawn(KillAllLoop) end
                 else
                     if humanoid then humanoid.Health = 0 end
                 end
-                HasSeenCoin = false
-                NoCoinsTimer = tick()
+                HasSeenCoin = false; NoCoinsTimer = tick()
             end
         end
 
@@ -276,43 +259,31 @@ local function AutoFarmLoop()
             if AutoFarmMode == "Smooth" then
                 workspace.Gravity = 0
                 if minDist <= 1 then
-                    IgnoredCoins[nearestCoin] = true
-                    bv.Velocity = Vector3.zero
+                    IgnoredCoins[nearestCoin] = true; bv.Velocity = Vector3.zero
                 else
                     local dir = (nearestCoin.Position - root.Position).Unit
                     bv.Velocity = dir * 20
                 end
             else
-                -- РЕЖИМ ТП: Сбор с вращением
                 bv.Velocity = Vector3.zero
                 workspace.Gravity = originalGravity
-                
                 if nearestCoin.Parent and minDist > 1 then
-                    -- 1. Телепорт к монете
                     local centerPos = nearestCoin.Position
                     root.CFrame = CFrame.new(centerPos)
-                    
-                    -- 2. Вращение вокруг монеты (по всем осям)
                     local angle = 0
                     local orbitConn
                     orbitConn = RunService.Heartbeat:Connect(function(dt)
-                        angle = angle + (dt * 15) -- Скорость вращения
+                        angle = angle + (dt * 2.5) 
                         local offsetX = math.cos(angle) * 1
                         local offsetY = math.sin(angle) * 1
                         local offsetZ = math.sin(angle) * 1
                         root.CFrame = CFrame.new(centerPos + Vector3.new(offsetX, offsetY, offsetZ))
-                        root.AssemblyLinearVelocity = Vector3.zero -- Фиксируем на месте
+                        root.AssemblyLinearVelocity = Vector3.zero
                     end)
-                    
-                    -- 3. Имитация сбора (движение вверх-вниз)
                     task.spawn(function()
-                        task.wait(0.1)
-                        root.AssemblyLinearVelocity = Vector3.new(0, 15, 0)
-                        task.wait(0.1)
-                        root.AssemblyLinearVelocity = Vector3.new(0, -15, 0)
+                        task.wait(0.1); root.AssemblyLinearVelocity = Vector3.new(0, 15, 0)
+                        task.wait(0.1); root.AssemblyLinearVelocity = Vector3.new(0, -15, 0)
                     end)
-                    
-                    -- 4. Ждем и завершаем вращение
                     task.wait(1.1)
                     if orbitConn then orbitConn:Disconnect() end
                     IgnoredCoins[nearestCoin] = true
@@ -325,9 +296,6 @@ local function AutoFarmLoop()
     workspace.Gravity = originalGravity
     bv:Destroy()
 end
-
--- Остальные функции (StopFling, StartFling, GetMurderer, GetNearestInnocent, RageAimLoop, LegitAimSheriffLoop, RageKnifeLoop, LegitKnifeLoop, KillAllLoop, AutoGunLoop)
--- остаются точно такими же, как в предыдущей версии.
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "MM2_Multi"; ScreenGui.ResetOnSpawn = false; ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
@@ -339,7 +307,7 @@ local UICorner = Instance.new("UICorner"); UICorner.CornerRadius = UDim.new(0, 8
 
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-Title.Text = "MM2 Multi-Tool v8"; Title.TextColor3 = Color3.new(1, 1, 1); Title.Font = Enum.Font.GothamBold; Title.Parent = Main
+Title.Text = "MM2 Multi-Tool v9"; Title.TextColor3 = Color3.new(1, 1, 1); Title.Font = Enum.Font.GothamBold; Title.Parent = Main
 local TitleCorner = Instance.new("UICorner"); TitleCorner.CornerRadius = UDim.new(0, 8); TitleCorner.Parent = Title
 
 local HideBtn = Instance.new("TextButton")
@@ -378,12 +346,14 @@ local function CreateSection(name)
     return sec
 end
 
-local function AddToggle(parent, text, callback)
+local function AddToggle(parent, text, callback, defaultState)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 30); btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40); btn.Text = text .. ": OFF"; btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Size = UDim2.new(1, 0, 0, 30); btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40); btn.TextColor3 = Color3.new(1, 1, 1)
     btn.Font = Enum.Font.Gotham; btn.TextSize = 14; btn.Parent = parent
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 4); c.Parent = btn
-    local state = false
+    local state = defaultState or false
+    btn.Text = text .. ": " .. (state and "ON" or "OFF")
+    btn.BackgroundColor3 = state and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(40, 40, 40)
     btn.MouseButton1Click:Connect(function()
         state = not state
         btn.Text = text .. ": " .. (state and "ON" or "OFF")
@@ -402,107 +372,26 @@ local function AddButton(parent, text, callback)
     return btn
 end
 
+-- ESP
 CreateTab("ESP")
 local EspSec = CreateSection("ESP")
 AddToggle(EspSec, "Murderer ESP", function(s) ESP_Settings.Murderer.Enabled = s end)
 AddToggle(EspSec, "Sheriff ESP", function(s) ESP_Settings.Sheriff.Enabled = s end)
+AddToggle(EspSec, "Hero ESP", function(s) ESP_Settings.Hero.Enabled = s end)
 AddToggle(EspSec, "Innocent ESP", function(s) ESP_Settings.Innocent.Enabled = s end)
-AddToggle(EspSec, "Show Name", function(s) ESP_Settings.Murderer.Name = s; ESP_Settings.Sheriff.Name = s; ESP_Settings.Innocent.Name = s; ESP_Settings.Lobby.Name = s end)
-AddToggle(EspSec, "Show Distance", function(s) ESP_Settings.Murderer.Dist = s; ESP_Settings.Sheriff.Dist = s; ESP_Settings.Innocent.Dist = s; ESP_Settings.Lobby.Dist = s end)
-AddToggle(EspSec, "Show Box", function(s) ESP_Settings.Murderer.Box = s; ESP_Settings.Sheriff.Box = s; ESP_Settings.Innocent.Box = s; ESP_Settings.Lobby.Box = s end)
-AddToggle(EspSec, "Show Tracer", function(s) ESP_Settings.Murderer.Tracer = s; ESP_Settings.Sheriff.Tracer = s; ESP_Settings.Innocent.Tracer = s; ESP_Settings.Lobby.Tracer = s end)
+AddToggle(EspSec, "Lobby ESP", function(s) ESP_Settings.Lobby.Enabled = s end, true)
+AddToggle(EspSec, "Gun ESP", function(s) ESP_Settings.Gun.Enabled = s end)
 
+-- Misc
 CreateTab("Misc")
 local MiscSec = CreateSection("Misc")
 AddToggle(MiscSec, "Noclip", ToggleNoclip)
 AddToggle(MiscSec, "Auto Farm (Smooth)", function(s) AutoFarm_Active = s; if s then AutoFarmMode = "Smooth"; task.spawn(AutoFarmLoop) end end)
 AddToggle(MiscSec, "Auto Farm (TP)", function(s) AutoFarm_Active = s; if s then AutoFarmMode = "TP"; task.spawn(AutoFarmLoop) end end)
-AddToggle(MiscSec, "Farm Death (No Coins)", function(s) FarmDeath_Active = s end)
+AddToggle(MiscSec, "Farm Death (No Coins/Full Bag)", function(s) FarmDeath_Active = s end)
 AddToggle(MiscSec, "Auto Grab Gun", function(s) AutoGun_Active = s; if s then task.spawn(AutoGunLoop) end end)
+-- Fling
 CreateTab("Fling")
 local FlingSec = CreateSection("Fling")
 local playerList = Instance.new("ScrollingFrame")
-playerList.Size = UDim2.new(1, 0, 0, 200); playerList.BackgroundColor3 = Color3.fromRGB(30, 30, 30); playerList.Parent = FlingSec
-local plLayout = Instance.new("UIListLayout"); plLayout.Parent = playerList
-
-local function RefreshPlayerList()
-    for _, c in ipairs(playerList:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 25); b.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-            b.Text = p.Name; b.TextColor3 = Color3.new(1, 1, 1); b.Parent = playerList
-            b.MouseButton1Click:Connect(function() if FlingTarget == p then StopFling() else StartFling(p) end end)
-        end
-    end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and IsInLobby(p) then
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 25); b.BackgroundColor3 = Color3.fromRGB(100, 50, 50)
-            b.Text = "[LOBBY] " .. p.Name; b.TextColor3 = Color3.new(1, 1, 1); b.Parent = playerList
-            b.MouseButton1Click:Connect(function() if FlingTarget == p then StopFling() else StartFling(p) end end)
-        end
-    end
-end
-RefreshPlayerList()
-Players.PlayerAdded:Connect(RefreshPlayerList); Players.PlayerRemoving:Connect(RefreshPlayerList)
-AddButton(FlingSec, "STOP FLING", StopFling)
-
-CreateTab("Aim")
-local AimSec = CreateSection("Aim")
-
-local sheriffLabel = Instance.new("TextLabel")
-sheriffLabel.Size = UDim2.new(1, 0, 0, 20); sheriffLabel.BackgroundTransparency = 1; sheriffLabel.Text = "=== SHERIFF ==="
-sheriffLabel.TextColor3 = Color3.fromRGB(0, 150, 255); sheriffLabel.Font = Enum.Font.GothamBold; sheriffLabel.Parent = AimSec
-AddToggle(AimSec, "Rage Aim (TP)", function(s) RageAim_Active = s; if s then task.spawn(RageAimLoop) end end)
-AddToggle(AimSec, "Legit Aim", function(s) LegitAimSheriff_Active = s; if s then task.spawn(LegitAimSheriffLoop) end end)
-
-local murdererLabel = Instance.new("TextLabel")
-murdererLabel.Size = UDim2.new(1, 0, 0, 20); murdererLabel.BackgroundTransparency = 1; murdererLabel.Text = "=== MURDERER ==="
-murdererLabel.TextColor3 = Color3.fromRGB(255, 0, 0); murdererLabel.Font = Enum.Font.GothamBold; murdererLabel.Parent = AimSec
-AddToggle(AimSec, "Rage Knife (TP)", function(s) RageKnife_Active = s; if s then task.spawn(RageKnifeLoop) end end)
-AddToggle(AimSec, "Legit Knife", function(s) LegitAimMurderer_Active = s; if s then task.spawn(LegitKnifeLoop) end end)
-AddToggle(AimSec, "KILL ALL (Local TP)", function(s) KillAll_Active = s; if s then task.spawn(KillAllLoop) end end)
-
-CreateTab("TP")
-local TpSec = CreateSection("TP")
-local tpList = Instance.new("ScrollingFrame")
-tpList.Size = UDim2.new(1, 0, 0, 250); tpList.BackgroundColor3 = Color3.fromRGB(30, 30, 30); tpList.Parent = TpSec
-local tpLayout = Instance.new("UIListLayout"); tpLayout.Parent = tpList
-local function RefreshTpList()
-    for _, c in ipairs(tpList:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 25); b.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-            b.Text = p.Name; b.TextColor3 = Color3.new(1, 1, 1); b.Parent = tpList
-            b.MouseButton1Click:Connect(function()
-                local root, targetRoot = GetRoot(), p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-                if root and targetRoot then root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -3) end
-            end)
-        end
-    end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and IsInLobby(p) then
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 25); b.BackgroundColor3 = Color3.fromRGB(100, 50, 50)
-            b.Text = "[LOBBY] " .. p.Name; b.TextColor3 = Color3.new(1, 1, 1); b.Parent = tpList
-            b.MouseButton1Click:Connect(function()
-                local root, targetRoot = GetRoot(), p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-                if root and targetRoot then root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -3) end
-            end)
-        end
-    end
-end
-RefreshTpList()
-Players.PlayerAdded:Connect(RefreshTpList); Players.PlayerRemoving:Connect(RefreshTpList)
-
-EspSec.Visible = true
-local hidden = false
-HideBtn.MouseButton1Click:Connect(function()
-    hidden = not hidden
-    Main.Size = hidden and UDim2.new(0, 300, 0, 30) or UDim2.new(0, 300, 0, 400)
-    Content.Visible = not hidden; TabsFrame.Visible = not hidden
-end)
-
-print("[MM2] Скрипт загружен.")
+playerList.Size = UDim2.new(1, 0, 0, 200); playerList.BackgroundColor3
