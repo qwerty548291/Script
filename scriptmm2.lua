@@ -98,33 +98,81 @@ local function UpdateESP()
     end
 end
 
+-- =========================================
+-- ЛОГИКА РОЛЕЙ (С Памятью Шерифа)
+-- =========================================
+local KnownSheriff = nil
+
 task.spawn(function()
     while task.wait(0.2) do
         ClearESP()
+        
+        -- Проверяем, жив ли Убийца (если нет, сбрасываем память)
+        local murdererAlive = false
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local backpack = p:FindFirstChild("Backpack")
+                if (p.Character:FindFirstChild("Knife")) or (backpack and backpack:FindFirstChild("Knife")) then
+                    murdererAlive = true
+                    break
+                end
+            end
+        end
+        
+        if not murdererAlive then
+            KnownSheriff = nil
+        end
+        
+        -- Ищем, у кого сейчас пистолет
+        local currentGunHolder = nil
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local backpack = p:FindFirstChild("Backpack")
+                if (p.Character:FindFirstChild("Gun")) or (p.Character:FindFirstChild("Revolver")) or 
+                   (backpack and (backpack:FindFirstChild("Gun") or backpack:FindFirstChild("Revolver"))) then
+                    currentGunHolder = p
+                    break
+                end
+            end
+        end
+
+        -- Если пистолет нашли, а мы еще не знаем шерифа
+        if currentGunHolder and not KnownSheriff then
+            KnownSheriff = currentGunHolder
+        end
+
+        -- Распределяем роли для ESP
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character then
                 if IsInLobby(player) then
                     if ESP_Settings.Lobby.Enabled then CreateESPForPlayer(player, "Lobby") end
                 else
-                    local isMurderer, isSheriff, isHero = false, false, false
+                    local isMurderer, isSheriff, isHero, isInnocent = false, false, false, false
                     local charTool = player.Character:FindFirstChildOfClass("Tool")
                     local backpack = player:FindFirstChild("Backpack")
                     
-                    local function HasTool(name)
+                    local function HasItem(name)
                         if charTool and charTool.Name == name then return true end
                         if backpack and backpack:FindFirstChild(name) then return true end
                         return false
                     end
 
-                    if HasTool("Knife") then isMurderer = true end
-                    if HasTool("Gun") or HasTool("Revolver") then
-                        if player.Backpack and player.Backpack:FindFirstChild("Sheriff") then isSheriff = true else isHero = true end
+                    if HasItem("Knife") then 
+                        isMurderer = true 
+                    elseif HasItem("Gun") or HasItem("Revolver") then
+                        if player == KnownSheriff then
+                            isSheriff = true
+                        else
+                            isHero = true
+                        end
+                    else
+                        isInnocent = true
                     end
                     
                     if isMurderer then CreateESPForPlayer(player, "Murderer")
                     elseif isSheriff then CreateESPForPlayer(player, "Sheriff")
                     elseif isHero then CreateESPForPlayer(player, "Hero")
-                    else CreateESPForPlayer(player, "Innocent") end
+                    elseif isInnocent then CreateESPForPlayer(player, "Innocent") end
                 end
             end
         end
