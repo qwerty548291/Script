@@ -141,11 +141,28 @@ local function AutoFarmLoop()
     local ZoneTimer = nil
     local IgnoredCoins = {}
     local IsPaused = false
+    
+    -- НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ ЛОГИКИ СМЕРТИ
+    local HasSeenCoin = false 
+    local IsDead = false
 
     while AutoFarm_Active do
         task.wait(0.05)
         local root = GetRoot()
-        if not root then break end
+        local humanoid = GetChar() and GetChar():FindFirstChildOfClass("Humanoid")
+        
+        -- Проверяем смерть персонажа
+        if not root or (humanoid and humanoid.Health <= 0) then
+            IsDead = true
+            HasSeenCoin = false -- После смерти сбрасываем флаг монет
+            NoCoinsTimer = tick()
+            bv.Velocity = Vector3.zero
+            task.wait(0.5)
+            continue
+        else
+            IsDead = false
+        end
+
         if not bv.Parent then bv.Parent = root end
 
         local coinFolder = workspace:FindFirstChild("CoinContainer", true)
@@ -156,7 +173,7 @@ local function AutoFarmLoop()
             IsPaused = true
             bv.Velocity = Vector3.zero
             NoCoinsTimer = tick()
-            task.wait(0.5) -- Пауза, чтобы не спамить
+            task.wait(0.5)
             continue
         else
             IsPaused = false
@@ -173,35 +190,26 @@ local function AutoFarmLoop()
             end
         end
 
-        -- Логика смерти при отсутствии монет (5 секунд) и только если есть роли
-        local murdererExists = false
-        local sheriffExists = false
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer and p.Character and not IsInLobby(p) then
-                local backpack = p:FindFirstChild("Backpack")
-                if backpack then
-                    if backpack:FindFirstChild("Knife") then murdererExists = true end
-                    if backpack:FindFirstChild("Gun") or backpack:FindFirstChild("Revolver") then sheriffExists = true end
-                end
-            end
+        -- ЛОГИКА СМЕРТИ
+        if nearestCoin then
+            HasSeenCoin = true -- Увидели монету, теперь таймер смерти разрешен
+            NoCoinsTimer = tick()
         end
 
-        local RolesAssigned = (murdererExists or sheriffExists)
-        
-        if nearestCoin and minDist <= 1000 then
-            NoCoinsTimer = tick()
-        elseif tick() - NoCoinsTimer > 5 and FarmDeath_Active and RolesAssigned and not IsPaused then
-            if GetChar():FindFirstChildOfClass("Tool") and GetChar():FindFirstChildOfClass("Tool").Name == "Knife" then
-                KillAll_Active = true
-            end
-            if GetChar() and GetChar():FindFirstChildOfClass("Humanoid") then
-                GetChar().Humanoid.Health = 0
+        if not nearestCoin and HasSeenCoin and not IsDead and not IsPaused and FarmDeath_Active then
+            -- Монет нет, мы живы, не в лобби и уже видели монеты ранее
+            if tick() - NoCoinsTimer > 5 then
+                if GetChar():FindFirstChildOfClass("Tool") and GetChar():FindFirstChildOfClass("Tool").Name == "Knife" then
+                    KillAll_Active = true
+                end
+                if humanoid then humanoid.Health = 0 end
+                HasSeenCoin = false -- После смерти сбрасываем
+                NoCoinsTimer = tick()
             end
         end
 
         if nearestCoin then
             if minDist <= 1 then
-                -- Зона сбора (1x1x1). Запускаем таймер для черного списка (0.5 сек)
                 if not ZoneTimer then
                     ZoneTimer = tick()
                 elseif tick() - ZoneTimer >= 0.5 then
@@ -221,20 +229,16 @@ local function AutoFarmLoop()
                     bv.Velocity = dir * 20
                 end
             else
-                -- Режим ТП
                 bv.Velocity = Vector3.zero
                 workspace.Gravity = originalGravity
                 if nearestCoin.Parent and minDist > 1 then
                     root.CFrame = CFrame.new(nearestCoin.Position)
-                    
-                    -- Движение вверх-вниз для регистрации сбора
                     task.spawn(function()
                         task.wait(0.1)
                         root.AssemblyLinearVelocity = Vector3.new(0, 15, 0)
                         task.wait(0.1)
                         root.AssemblyLinearVelocity = Vector3.new(0, -15, 0)
                     end)
-                    
                     task.wait(1.1)
                 end
             end
@@ -246,7 +250,7 @@ local function AutoFarmLoop()
     bv:Destroy()
 end
 
--- Авто-перезапуск фарма (если завис)
+-- Авто-перезапуск фарма
 task.spawn(function()
     while true do
         task.wait(5)
